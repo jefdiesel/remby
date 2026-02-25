@@ -2,15 +2,24 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   getPropertyByBBL,
   getNeighborhoodComps,
-  analyzeNegotiationSignal,
   calculateBuildingHealth,
 } from '@/lib/property-service';
+import { readNeighborhoodStats } from '@/lib/kv-storage';
+import { getNeighborhoodForCoords } from '@/lib/neighborhoods';
+import { getStreetEasyListing, formatListingDisplay } from '@/lib/streeteasy';
+import {
+  analyzeTaxAbatement,
+  analyzeComps,
+  detectPropertyType,
+  generateNegotiationInsight,
+} from '@/lib/buyer-intelligence';
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ bbl: string }> }
 ) {
   const { bbl } = await params;
+  const address = request.nextUrl.searchParams.get('address');
 
   if (!bbl || bbl.length !== 10) {
     return NextResponse.json(
@@ -20,13 +29,50 @@ export async function GET(
   }
 
   try {
+    // Fetch base property data
     const propertyData = await getPropertyByBBL(bbl);
 
-    // Get neighborhood comps if we have coordinates
+    // Fetch buyer intelligence in parallel
+    const [taxAbatement, streetEasyListing, neighborhoodStats] = await Promise.all([
+      analyzeTaxAbatement(bbl),
+      address ? getStreetEasyListing(address) : Promise.resolve(null),
+      // Get neighborhood stats based on BBL borough
+      getNeighborhoodStatsForBBL(bbl),
+    ]);
+
+    // Calculate building health
+    const buildingHealth = calculateBuildingHealth(
+      propertyData.hpdViolations,
+      propertyData.dobViolations
+    );
+
+    // Detect property type
+    const deedTypes = propertyData.sales.map(s => 'DEED'); // Would need actual deed type from ACRIS
+    const propertyType = detectPropertyType(
+      propertyData.property?.building_class || null,
+      deedTypes,
+      streetEasyListing?.propertyType || null
+    );
+
+    // Comp analysis (asking vs sold prices)
+    const compAnalysis = analyzeComps(streetEasyListing, neighborhoodStats);
+
+    // Enhanced negotiation insight
+    const negotiationInsight = generateNegotiationInsight(
+      streetEasyListing,
+      neighborhoodStats,
+      propertyData.sales
+    );
+
+    // Format StreetEasy display
+    const listingDisplay = streetEasyListing
+      ? formatListingDisplay(streetEasyListing)
+      : null;
+
+    // Legacy comps for chart compatibility
     let comps90 = null;
     let comps180 = null;
     let comps365 = null;
-    let negotiationSignal = null;
 
     if (propertyData.property?.latitude && propertyData.property?.longitude) {
       const lat = propertyData.property.latitude;
@@ -37,34 +83,7 @@ export async function GET(
         getNeighborhoodComps(lat, lng, 180),
         getNeighborhoodComps(lat, lng, 365),
       ]);
-
-      negotiationSignal = analyzeNegotiationSignal(
-        comps180,
-        propertyData.property,
-        propertyData.sales[0] || null
-      );
-    } else if (propertyData.sales.length > 0) {
-      // No coords but have sales - calculate signal from what we have
-      const emptyComps: Parameters<typeof analyzeNegotiationSignal>[0] = {
-        sales: [],
-        medianPrice: null,
-        avgPricePerSqft: null,
-        salesCount: 0,
-        priceChangeTrend: null,
-        avgDaysOnMarket: null,
-      };
-      negotiationSignal = analyzeNegotiationSignal(
-        emptyComps,
-        propertyData.property,
-        propertyData.sales[0]
-      );
     }
-
-    // Calculate building health
-    const buildingHealth = calculateBuildingHealth(
-      propertyData.hpdViolations,
-      propertyData.dobViolations
-    );
 
     // Days since last sale
     const lastSale = propertyData.sales[0];
@@ -73,14 +92,81 @@ export async function GET(
       : null;
 
     return NextResponse.json({
+      // Base property data
       ...propertyData,
+
+      // Building health
+      buildingHealth,
+
+      // Legacy negotiation (for backwards compat)
+      negotiationSignal: {
+        signal: negotiationInsight.signal === 'strong_seller' ? 'HOT' :
+                negotiationInsight.signal === 'strong_buyer' ? 'SOFT' : 'NORMAL',
+        reasons: negotiationInsight.factors,
+        confidence: negotiationInsight.confidence,
+      },
+
+      // NEW: Enhanced buyer intelligence
+      buyerIntelligence: {
+        // StreetEasy listing data
+        listing: streetEasyListing ? {
+          ...listingDisplay,
+          askingPrice: streetEasyListing.askingPrice,
+          daysOnMarket: streetEasyListing.daysOnMarket,
+          priceReductions: streetEasyListing.priceReductions,
+          totalPriceReduction: streetEasyListing.totalPriceReduction,
+          originalPrice: streetEasyListing.originalPrice,
+          priceHistory: streetEasyListing.priceHistory,
+          listingStatus: streetEasyListing.listingStatus,
+          listingUrl: streetEasyListing.listingUrl,
+          sqft: streetEasyListing.sqft,
+          pricePerSqft: streetEasyListing.pricePerSqft,
+          bedrooms: streetEasyListing.bedrooms,
+          bathrooms: streetEasyListing.bathrooms,
+        } : null,
+
+        // Tax abatement
+        taxAbatement: taxAbatement.hasAbatement ? {
+          type: taxAbatement.abatementType,
+          expirationYear: taxAbatement.expirationYear,
+          yearsRemaining: taxAbatement.yearsRemaining,
+          currentTaxBenefit: taxAbatement.currentTaxBenefit,
+          estimatedPostExpirationTax: taxAbatement.estimatedPostExpirationTax,
+          warning: taxAbatement.warningMessage,
+        } : null,
+
+        // Comp analysis
+        compAnalysis: compAnalysis.summary ? {
+          askingPricePerSqft: compAnalysis.askingPricePerSqft,
+          medianCompPricePerSqft: compAnalysis.medianCompPricePerSqft,
+          deltaPercent: compAnalysis.deltaPercent,
+          isAboveMarket: compAnalysis.isAboveMarket,
+          summary: compAnalysis.summary,
+        } : null,
+
+        // Enhanced negotiation insight
+        negotiation: {
+          signal: negotiationInsight.signal,
+          confidence: negotiationInsight.confidence,
+          summary: negotiationInsight.summary,
+          factors: negotiationInsight.factors,
+          suggestedOfferRange: negotiationInsight.suggestedOfferRange,
+        },
+
+        // Property type with warnings
+        propertyType: {
+          type: propertyType.type,
+          warning: propertyType.warning,
+        },
+      },
+
+      // Legacy comps
       comps: {
         days90: comps90,
         days180: comps180,
         days365: comps365,
       },
-      negotiationSignal,
-      buildingHealth,
+
       daysSinceLastSale,
     });
   } catch (error) {
@@ -90,4 +176,14 @@ export async function GET(
       { status: 500 }
     );
   }
+}
+
+async function getNeighborhoodStatsForBBL(bbl: string) {
+  // BBL first digit is borough, use default neighborhood for now
+  const borough = bbl[0];
+  if (borough === '3') {
+    // Brooklyn - try bedstuy
+    return readNeighborhoodStats('bedstuy');
+  }
+  return null;
 }

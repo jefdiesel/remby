@@ -428,6 +428,71 @@ export async function geocodeAddress(query: string): Promise<GeoSearchResponse> 
   return response.json();
 }
 
+// Tax Abatements (421-a, J-51, etc.)
+export interface TaxAbatement {
+  bbl: string;
+  abatement: string; // 421-a, J-51, etc.
+  init_year: string;
+  ex_years: string;
+  ab_pct: string;
+  amt_remain: string;
+  total_tax: string;
+  tax_year: string;
+}
+
+export async function fetchTaxAbatements(options: SocrataRequestOptions = {}): Promise<TaxAbatement[]> {
+  return fetchSocrata<TaxAbatement>(
+    'https://data.cityofnewyork.us/resource/y7az-s7wc.json',
+    options
+  );
+}
+
+export async function fetchTaxAbatementByBBL(bbl: string): Promise<TaxAbatement | null> {
+  const borough = bbl[0];
+  const block = bbl.slice(1, 6);
+  const lot = bbl.slice(6);
+
+  const abatements = await fetchTaxAbatements({
+    where: `b = '${borough}' AND block = '${block}' AND lot = '${lot}'`,
+    order: 'tax_year DESC',
+    limit: 1,
+  });
+
+  return abatements.length > 0 ? abatements[0] : null;
+}
+
+// Property Assessment (for tax estimates)
+export interface PropertyAssessment {
+  bbl: string;
+  boro: string;
+  block: string;
+  lot: string;
+  bldgcl: string; // Building class
+  taxclass: string;
+  avtot: string; // Assessed total value
+  excd1: string; // Exemption code
+  excd2: string;
+  fullval: string; // Full market value
+  year: string;
+}
+
+export async function fetchPropertyAssessment(bbl: string): Promise<PropertyAssessment | null> {
+  const borough = bbl[0];
+  const block = bbl.slice(1, 6).replace(/^0+/, '');
+  const lot = bbl.slice(6).replace(/^0+/, '');
+
+  const assessments = await fetchSocrata<PropertyAssessment>(
+    'https://data.cityofnewyork.us/resource/yjxr-fw8i.json',
+    {
+      where: `boro = '${borough}' AND block = '${block}' AND lot = '${lot}'`,
+      order: 'year DESC',
+      limit: 1,
+    }
+  );
+
+  return assessments.length > 0 ? assessments[0] : null;
+}
+
 // Helper to construct BBL from borough, block, lot
 export function constructBBL(borough: string, block: string, lot: string): string {
   // Borough codes: 1=Manhattan, 2=Bronx, 3=Brooklyn, 4=Queens, 5=Staten Island

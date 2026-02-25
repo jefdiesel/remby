@@ -8,9 +8,56 @@ import { ViolationsPanel } from '@/components/ViolationsPanel';
 import { NeighborhoodComps } from '@/components/NeighborhoodComps';
 import { NegotiationSignal } from '@/components/NegotiationSignal';
 import { PriceHistoryChart } from '@/components/PriceHistoryChart';
+import { BuyerIntelligence } from '@/components/BuyerIntelligence';
 import type { GeoSearchFeature } from '@/lib/nyc-apis';
 import type { Property, Sale, HPDViolation, DOBViolation, DOBPermit, SyncLog } from '@/types/database';
 import type { NeighborhoodComps as CompsData, NegotiationAnalysis, BuildingHealthScore } from '@/lib/property-service';
+
+interface BuyerIntelligenceData {
+  listing: {
+    headline: string | null;
+    priceDropSummary: string | null;
+    statusLine: string | null;
+    askingPrice: number | null;
+    daysOnMarket: number | null;
+    priceReductions: number;
+    totalPriceReduction: number;
+    originalPrice: number | null;
+    priceHistory: Array<{ date: string; price: number; change: number }>;
+    listingStatus: string;
+    listingUrl: string | null;
+    sqft: number | null;
+    pricePerSqft: number | null;
+    bedrooms: number | null;
+    bathrooms: number | null;
+  } | null;
+  taxAbatement: {
+    type: string;
+    expirationYear: number | null;
+    yearsRemaining: number | null;
+    currentTaxBenefit: number | null;
+    estimatedPostExpirationTax: number | null;
+    warning: string | null;
+  } | null;
+  compAnalysis: {
+    askingPricePerSqft: number | null;
+    medianCompPricePerSqft: number | null;
+    deltaPercent: number | null;
+    isAboveMarket: boolean;
+    summary: string;
+  } | null;
+  negotiation: {
+    signal: 'strong_buyer' | 'slight_buyer' | 'neutral' | 'slight_seller' | 'strong_seller';
+    confidence: 'high' | 'medium' | 'low';
+    summary: string;
+    factors: string[];
+    suggestedOfferRange: { low: number; high: number } | null;
+  };
+  propertyType: {
+    type: 'coop' | 'condo' | 'house' | 'multi-family' | 'unknown';
+    warning: string | null;
+  };
+}
 
 interface PropertyResponse {
   property: Property | null;
@@ -28,6 +75,7 @@ interface PropertyResponse {
   negotiationSignal: NegotiationAnalysis | null;
   buildingHealth: BuildingHealthScore;
   daysSinceLastSale: number | null;
+  buyerIntelligence?: BuyerIntelligenceData;
 }
 
 function LoadingSkeleton() {
@@ -68,13 +116,15 @@ export default function Home() {
       return;
     }
 
-    setSelectedAddress(feature.properties.label);
+    const address = feature.properties.label;
+    setSelectedAddress(address);
     setIsLoading(true);
     setError(null);
     setPropertyData(null);
 
     try {
-      const response = await fetch(`/api/property/${bbl}`);
+      // Include address for StreetEasy lookup
+      const response = await fetch(`/api/property/${bbl}?address=${encodeURIComponent(address)}`);
 
       if (!response.ok) {
         const data = await response.json();
@@ -176,7 +226,7 @@ export default function Home() {
         {/* Results */}
         {propertyData && !isLoading && (
           <div className="space-y-6">
-            {/* Top Row: Property Info + Negotiation Signal */}
+            {/* Top Row: Property Info + Building Health */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <PropertyCard
                 property={propertyData.property}
@@ -186,6 +236,17 @@ export default function Home() {
               />
               <NegotiationSignal analysis={propertyData.negotiationSignal} />
             </div>
+
+            {/* NEW: Buyer Intelligence Section */}
+            {propertyData.buyerIntelligence && (
+              <BuyerIntelligence
+                listing={propertyData.buyerIntelligence.listing}
+                taxAbatement={propertyData.buyerIntelligence.taxAbatement}
+                compAnalysis={propertyData.buyerIntelligence.compAnalysis}
+                negotiation={propertyData.buyerIntelligence.negotiation}
+                propertyType={propertyData.buyerIntelligence.propertyType}
+              />
+            )}
 
             {/* Neighborhood Comps */}
             <NeighborhoodComps
