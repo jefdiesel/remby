@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { AddressSearch } from '@/components/AddressSearch';
 import { PropertyCard } from '@/components/PropertyCard';
 import { SalesHistory } from '@/components/SalesHistory';
@@ -157,6 +158,12 @@ export default function Home() {
               <h1 className="text-2xl font-bold text-gray-900">NYC Property Intel</h1>
               <p className="text-sm text-gray-500">Free NYC real estate intelligence</p>
             </div>
+            <Link
+              href="/feed"
+              className="hidden md:flex items-center gap-1 px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors text-sm"
+            >
+              Browse Bed-Stuy Listings
+            </Link>
             <div className="flex-1">
               <AddressSearch onSelect={handleAddressSelect} isLoading={isLoading} />
             </div>

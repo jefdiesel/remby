@@ -13,6 +13,9 @@ const KEYS = {
   dob: (bbl: string) => `dob:${bbl}`,
   property: (bbl: string) => `property:${bbl}`,
   neighborhood: (slug: string) => `neighborhood:${slug}`,
+  listing: (neighborhood: string, listingId: string) => `listings:${neighborhood}:${listingId}`,
+  listingIndex: (neighborhood: string) => `listings:${neighborhood}:index`,
+  listingScrapeLog: (neighborhood: string) => `listings:${neighborhood}:scrape_log`,
   meta: 'meta:last_synced',
 };
 
@@ -102,6 +105,93 @@ export interface SyncMetadata {
   dob: string | null;
   properties: string | null;
   neighborhoods: string | null;
+}
+
+// Analyzed listing with full buyer intelligence
+export interface AnalyzedListing {
+  // Core listing data
+  listingId: string;
+  address: string;
+  neighborhood: string;
+  subArea: string | null;
+  bbl: string | null;
+
+  // Pricing
+  askingPrice: number;
+  originalPrice: number | null;
+  pricePerSqft: number | null;
+  priceReductions: number;
+  totalPriceReduction: number;
+  priceHistory: Array<{ date: string; price: number; change: number }>;
+
+  // Property details
+  beds: number | null;
+  baths: number | null;
+  sqft: number | null;
+  propertyType: 'coop' | 'condo' | 'townhouse' | 'multi-family' | 'house' | 'unknown';
+  yearBuilt: number | null;
+
+  // Market status
+  daysOnMarket: number | null;
+  listingStatus: 'active' | 'in_contract' | 'unknown';
+  openHouseDates: string[];
+
+  // Buyer intelligence
+  negotiationSignal: 'strong_buyer' | 'slight_buyer' | 'neutral' | 'slight_seller' | 'strong_seller';
+  negotiationSummary: string;
+  negotiationFactors: string[];
+  suggestedOfferRange: { low: number; high: number } | null;
+
+  // Comp analysis
+  compDeltaPercent: number | null;
+  isAboveMarket: boolean | null;
+  compSummary: string | null;
+
+  // Tax abatement
+  hasTaxAbatement: boolean;
+  taxAbatementType: string | null;
+  taxAbatementExpiration: number | null;
+  taxAbatementWarning: string | null;
+
+  // Building health
+  buildingHealthScore: number;
+  buildingHealthGrade: 'A' | 'B' | 'C' | 'D' | 'F';
+  openViolations: number;
+
+  // Sales history
+  lastSalePrice: number | null;
+  lastSaleDate: string | null;
+  priceAppreciation: number | null;
+
+  // URLs and images
+  listingUrl: string;
+  photoUrl: string | null;
+
+  // Metadata
+  scrapedAt: string;
+  analyzedAt: string;
+}
+
+export interface ListingIndexEntry {
+  listingId: string;
+  askingPrice: number;
+  beds: number | null;
+  propertyType: string;
+  negotiationSignal: string;
+  daysOnMarket: number | null;
+  hasTaxAbatement: boolean;
+  openViolations: number;
+  listingStatus: string;
+  updatedAt: string;
+}
+
+export interface ListingScrapeLog {
+  lastScrape: string;
+  totalListings: number;
+  newListings: number;
+  updatedListings: number;
+  removedListings: number;
+  errors: string[];
 }
 
 // Read functions
@@ -229,4 +319,79 @@ export async function batchWriteProperties(propertiesByBBL: Map<string, StoredPr
 
   await pipeline.exec();
   return count;
+}
+
+// Listing functions
+export async function writeListing(neighborhood: string, listing: AnalyzedListing): Promise<void> {
+  await redis.set(KEYS.listing(neighborhood, listing.listingId), listing);
+}
+
+export async function readListing(neighborhood: string, listingId: string): Promise<AnalyzedListing | null> {
+  try {
+    return await redis.get<AnalyzedListing>(KEYS.listing(neighborhood, listingId));
+  } catch {
+    return null;
+  }
+}
+
+export async function batchWriteListings(neighborhood: string, listings: AnalyzedListing[]): Promise<number> {
+  if (listings.length === 0) return 0;
+
+  const pipeline = redis.pipeline();
+
+  for (const listing of listings) {
+    pipeline.set(KEYS.listing(neighborhood, listing.listingId), listing);
+  }
+
+  await pipeline.exec();
+  return listings.length;
+}
+
+export async function writeListingIndex(neighborhood: string, entries: ListingIndexEntry[]): Promise<void> {
+  await redis.set(KEYS.listingIndex(neighborhood), entries);
+}
+
+export async function readListingIndex(neighborhood: string): Promise<ListingIndexEntry[] | null> {
+  try {
+    return await redis.get<ListingIndexEntry[]>(KEYS.listingIndex(neighborhood));
+  } catch {
+    return null;
+  }
+}
+
+export async function writeListingScrapeLog(neighborhood: string, log: ListingScrapeLog): Promise<void> {
+  await redis.set(KEYS.listingScrapeLog(neighborhood), log);
+}
+
+export async function readListingScrapeLog(neighborhood: string): Promise<ListingScrapeLog | null> {
+  try {
+    return await redis.get<ListingScrapeLog>(KEYS.listingScrapeLog(neighborhood));
+  } catch {
+    return null;
+  }
+}
+
+// Get all listing IDs for a neighborhood from index
+export async function getListingIds(neighborhood: string): Promise<string[]> {
+  const index = await readListingIndex(neighborhood);
+  if (!index) return [];
+  return index.map(e => e.listingId);
+}
+
+// Delete a listing
+export async function deleteListing(neighborhood: string, listingId: string): Promise<void> {
+  await redis.del(KEYS.listing(neighborhood, listingId));
+}
+
+// Batch delete listings
+export async function batchDeleteListings(neighborhood: string, listingIds: string[]): Promise<number> {
+  if (listingIds.length === 0) return 0;
+
+  const pipeline = redis.pipeline();
+  for (const id of listingIds) {
+    pipeline.del(KEYS.listing(neighborhood, id));
+  }
+
+  await pipeline.exec();
+  return listingIds.length;
 }
